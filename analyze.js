@@ -1,3 +1,4 @@
+
 /*
 Copyright 2014 Spotify AB
 
@@ -17,14 +18,35 @@ limitations under the License.
 var EMPTY_STACK = "	<empty stack>";
 var generatedIdCounter = 1;
 
+var specialThreadsAndStacks = []; // Global variable to store specialThreadsAndStacks
+
 // This method is called from HTML
 function analyzeTextfield() {
+
+    // Get the special class name from the input field
+    var specialClass = document.getElementById('specialClass').value;
+
+    // Get selected thread states from the multi-select dropdown
+    var threadStates = Array.from(document.getElementById('threadStates').selectedOptions).map(option => option.value);
+    console.log(threadStates);
+
     var text = document.getElementById("TEXTAREA").value;
-    analyze(text);
+    analyze(text, specialClass, threadStates);
 }
 
 // This method is called from HTML so we need to tell ESLint it's not unused
 function analyzeFile() { // eslint-disable-line no-unused-vars
+
+    // Get the special class name from the input field
+    var specialClass = document.getElementById('specialClass').value;
+
+    // Get selected thread states from the multi-select dropdown
+    var threadStates = Array.from(document.getElementById('threadStates').selectedOptions).map(option => option.value);
+    console.log(threadStates);
+
+
+    console.log(specialClass, threadStates);
+
     var fileNode = document.getElementById("FILE");
     if (fileNode.files.length > 0) {
         var file = fileNode.files[0];
@@ -32,14 +54,33 @@ function analyzeFile() { // eslint-disable-line no-unused-vars
         fileReader.readAsText(file);
         fileReader.onloadend = function(){
             var text = fileReader.result;
-            analyze(text);
+            analyze(text, specialClass, threadStates);
         };
     }
 }
 
+// Define showDetails function independently
+function showDetails(element) {
+    var type = element.getAttribute('data-type');
+    var index = parseInt(element.getAttribute('data-index'), 10);
 
-function analyze(text) {
-    var analyzer = new Analyzer(text);
+    var details = '';
+    if (type === 'threads') {
+        details = specialThreadsAndStacks[index].threads.map(function(thread) {
+            return thread.toHeaderHtml();
+        }).join("<br>");
+    } else if (type === 'stack') {
+        details = specialThreadsAndStacks[index].stackFrames.join("<br>");
+    }
+
+    var newWindow = window.open("", "_blank");
+    newWindow.document.write('<html><head><title>Details</title></head><body>');
+    newWindow.document.write('<pre>' + details + '</pre>');
+    newWindow.document.close();
+}
+
+function analyze(text, specialClass, threadStates) {
+    var analyzer = new Analyzer(text, specialClass, threadStates);
     setHtml("OUTPUT", analyzer.toHtml());
 
     var ignores = analyzer.toIgnoresHtml();
@@ -183,6 +224,22 @@ function Thread(line) {
 
     this.isValid = function() {
         return Object.prototype.hasOwnProperty.call(this,"name") && this.name !== undefined;
+    };
+
+    //console.log(thread);
+    // For filtering the stack frames based on a specific class!
+    this.containsSpecialClass = function(specialClasses) {
+        //console.log(this.name);
+        for (var i = 0; i < this.frames.length; i++) {
+            if(this.frames[i].includes(specialClasses))
+                return true;
+            // for (var j = 0; j < specialClasses.length; j++) {
+            //     if (this.frames[i].includes(specialClasses[j])) {
+            //         return true;
+            //     }
+            // }
+        }
+        return false;
     };
 
     // Return true if the line was understood, false otherwise
@@ -465,22 +522,38 @@ function createLockUsersHtml(title, threads) {
     }
 
     var html = "";
+    var fullHtml = "";
 
     html += '<div class="synchronizer">';
+    fullHtml += '<div class="synchronizer">';
     if (threads.length > 4) {
         html += threads.length + " ";
         title = title.charAt(0).toLowerCase() + title.slice(1);
     }
     html += title + ":";
+    fullHtml += title + ":";
     threads.sort();
     for (var i = 0; i < threads.length; i++) {
         var thread = threads[i];
-        html += '<br><span class="raw">  ' + thread.getLinkedName() + "</span>";
+        fullHtml += '<br><span class="raw">  ' + thread.getLinkedName() + "</span>";
+        if (i < 3) {
+            html += '<br><span class="raw">  ' + thread.getLinkedName() + "</span>";
+        }
+    }
+    if (threads.length > 3) {
+        html += '<br><span class="raw">  and ' + (threads.length - 3) + ' more...</span>';
     }
     html += "</div>";
+    fullHtml += "</div>";
 
-    return html;
+    return '<div class="synchronizer-cell" data-full-content="' + encodeURIComponent(fullHtml) + '" onclick="openThreadDetails(this)">' + html + '</div>';
 }
+
+function openThreadDetails(element) {
+    var newWindow = window.open("", "_blank");
+    newWindow.document.write(decodeURIComponent(element.dataset.fullContent));
+}
+
 
 function Synchronizer(id, className) {
     this.getPrettyClassName = function() {
@@ -569,7 +642,7 @@ function synchronizerComparator(a, b) {
 }
 
 // Create an analyzer object
-function Analyzer(text) {
+function Analyzer(text, specialClasses, threadStates) {
     this._handleLine = function(line) {
         var thread = new Thread(line);
         var parsed = false;
@@ -587,6 +660,7 @@ function Analyzer(text) {
         if (!parsed) {
             this._ignores.addString(line);
         }
+        console.log("parsed");
     };
 
     /* Some threads are waiting for notification, but the thread dump
@@ -661,11 +735,23 @@ function Analyzer(text) {
     // Returns an array [{threads:, stackFrames:,} ...]. The threads:
     // field contains an array of Threads. The stackFrames contain an
     // array of strings
-    this._toThreadsAndStacks = function() {
+    this._toThreadsAndStacks = function(specialClasses) {
         // Map stacks to which threads have them
         var stacksToThreads = {};
         for (var i = 0; i < this.threads.length; i++) {
             var thread = this.threads[i];
+            //console.log(thread);
+            // If specialClasses is provided, filter threads based on specialClasses either in stack trace or the thread header(name)
+            // console.log(thread.name, specialClasses, thread.name.includes(specialClass));
+            // console.log(`Thread name: '${thread.name}' (length: ${thread.name.length}), Special class: '${specialClass}' (length: ${specialClass.length})`);
+            // console.log(`Contains special class: ${thread.name.includes(specialClass)}`);
+            if (specialClasses && !(thread.containsSpecialClass(specialClasses) || thread.name.includes(specialClasses))) {
+                continue; // Skip threads that do not contain special classes
+            }
+            
+            console.log(`Hello there: ${thread.threadState} ${thread.name} ${thread.daemon}`);
+
+            //console.log(thread.state)
             var stackString = thread.toStackString();
             if (!Object.prototype.hasOwnProperty.call(stacksToThreads, stackString)) {
                 stacksToThreads[stackString] = [];
@@ -764,50 +850,94 @@ function Analyzer(text) {
             }
 
             asHtml += "</div>\n";
+            console.log(stackFrames);
         }
 
         return asHtml;
     };
-
+ 
     this.toHtml = function() {
         if (this.threads.length === 0) {
             return "";
         }
-
-        var threadsAndStacks = this._toThreadsAndStacks();
-
+    
+        specialThreadsAndStacks = this._toThreadsAndStacks(specialClasses);
+        var allThreadsAndStacks = this._toThreadsAndStacks();
         var asHtml = "";
-        asHtml += "<h2>" + this.threads.length + " threads found</h2>\n";
-        for (var i = 0; i < threadsAndStacks.length; i++) {
-            var currentThreadsAndStack = threadsAndStacks[i];
-            var threads = currentThreadsAndStack.threads;
+        
+        var allFilteredThreads = [];
+        var allFilteredThreadsandStacks = [];
+        var state = threadStates;
 
-            asHtml += '<div class="threadgroup">\n';
-            var noOrThis = (currentThreadsAndStack.stackFrames.length === 0) ? "no" : "this";
-            if (threads.length > 4) {
-                asHtml += '<div class="threadcount">' + threads.length + " threads with " + noOrThis + " stack:</div>\n";
-            } else {
-                // Having an empty div here makes all paragraphs, both
-                // those with and those without headings evenly spaced.
-                asHtml += '<div class="threadcount"></div>\n';
+        // Print special class threads
+        if (specialThreadsAndStacks.length > 0) {
+
+            //console.log(threadStates);
+            asHtml += "<h2>Threads containing Keywords: " + specialClasses + "</h2>\n";
+            asHtml += '<table border="1" cellpadding="5" cellspacing="0">';
+            asHtml += '<tr><th>Number of Threads</th><th>Threads</th><th>Stack</th></tr>';
+            for (var i = 0; i < specialThreadsAndStacks.length; i++) {
+
+                var currentThreadsAndStack = specialThreadsAndStacks[i];
+                var threads = currentThreadsAndStack.threads;
+    
+                // Filter threads based on the state if a state is specified
+                var filteredThreads = threads;
+                if (state && state.length > 0) {
+                    //console.log(state);
+                    filteredThreads = threads.filter(function(thread) {
+                        if (thread.threadState) {
+                            var firstWordOfState = thread.threadState.split(' ')[0]; // Extract the first word
+                            console.log(thread.threadState, firstWordOfState, state.includes(firstWordOfState));
+                            return state.includes(firstWordOfState);
+                        }
+                        return false; // Exclude threads without a valid threadState
+                    });
+                }
+
+    
+                if (filteredThreads.length > 0) {
+                    
+                    allFilteredThreads = allFilteredThreads.concat(filteredThreads)
+                    allFilteredThreadsandStacks = allFilteredThreadsandStacks.concat({
+                        stackTrace: currentThreadsAndStack.stackFrames,
+                        threads: filteredThreads.length
+                    });
+
+                    asHtml += '<tr>';
+                    asHtml += '<td>' + filteredThreads.length + '</td>';
+    
+                    // Preview for threads column
+                    var threadsPreview = filteredThreads.map(function(thread) {
+                        return thread.toHeaderHtml();
+                    }).slice(0, 3).join("<br>") + '...';
+                    asHtml += `<td><a href="#" data-type="threads" data-index="${i}" onclick="showDetails(this)">${threadsPreview}</a></td>`;
+    
+                    // Preview for stack column
+                    var stackPreview = currentThreadsAndStack.stackFrames.slice(0, 3).join("<br>") + '...';
+                    asHtml += `<td><a href="#" data-type="stack" data-index="${i}" onclick="showDetails(this)">${stackPreview}</a></td>`;
+    
+                    asHtml += '</tr>';
+                }
             }
+            
+            asHtml += '</table>';
 
-            for (var j = 0; j < threads.length; j++) {
-                var thread = threads[j];
-                asHtml += '<div id="thread-' +
-                    thread.tid +
-                    '">' +
-                    thread.toHeaderHtml() +
-                    "</div>\n";
-            }
+            // Passing all filtered out threads to generate a pie char
+            var threadStateCounts = getThreadStateCounts(allFilteredThreads);
+            createPieChart(threadStateCounts, allFilteredThreads);
 
-            asHtml += this._stackToHtml(currentThreadsAndStack.stackFrames);
+            // Passing all filtered out stack traces and threads to generate a bar graph
+            var stackTraceData = getStackTraceCounts(allFilteredThreadsandStacks);
+            createBarChart(stackTraceData);
 
-            asHtml += "</div>\n";
+            // Create the doughnut chart for daemon and non-daemon threads
+            createDaemonChart(allFilteredThreads);
         }
-
+    
         return asHtml;
-    };
+    }
+    
 
     this.toIgnoresString = function() {
         return this._ignores.toString() + "\n";
@@ -831,18 +961,18 @@ function Analyzer(text) {
 
     this.toRunningHtml = function() {
         var html = "";
-        var countedStrings = this.countedRunningMethods.getStrings();
-        for (var i = 0; i < countedStrings.length; i++) {
-            var countedString = countedStrings[i];
-            var ids = countedString.sources.map(this.getSourceInfo);
-            html += '<tr id="';
-            html += stringToId(countedString.string);
-            html += '"><td class="vertical-align">';
-            html += htmlEscape(countedString.string);
-            html += '</td><td class="raw">';
-            html += ids.join("<br>");
-            html += "</td></tr>\n";
-        }
+        // var countedStrings = this.countedRunningMethods.getStrings();
+        // for (var i = 0; i < countedStrings.length; i++) {
+        //     var countedString = countedStrings[i];
+        //     var ids = countedString.sources.map(this.getSourceInfo);
+        //     html += '<tr id="';
+        //     html += stringToId(countedString.string);
+        //     html += '"><td class="vertical-align">';
+        //     html += htmlEscape(countedString.string);
+        //     html += '</td><td class="raw">';
+        //     html += ids.join("<br>");
+        //     html += "</td></tr>\n";
+        // }
         return html;
     };
 
@@ -953,4 +1083,244 @@ function Analyzer(text) {
     this.countedRunningMethods = this._countRunningMethods();
     this._synchronizerById = this._createSynchronizerById();
     this._synchronizers = this._enumerateSynchronizers();
+}
+
+//Visualizations
+// The createPieChart function
+function createPieChart(threadStateCounts, threads) {
+    var ctx = document.getElementById('threadStateChart').getContext('2d');
+    var chart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: Object.keys(threadStateCounts),
+            datasets: [{
+                data: Object.values(threadStateCounts),
+                backgroundColor: [
+                    '#003f5c',
+                    '#58508d',
+                    '#bc5090',
+                    '#ff6361',
+                    '#ffa600',
+                    '#35b779'
+                ],
+                borderColor: [
+                    '#003f5c',
+                    '#58508d',
+                    '#bc5090',
+                    '#ff6361',
+                    '#ffa600',
+                    '#35b779'
+                ],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            aspectRatio: 2.75, // Makes the chart smaller
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        fontSize: 16, // Makes the legend text bigger
+                        boxWidth: 20
+                    }
+                },
+                title: {
+                    display: true,
+                    text: 'Thread State Statistics',
+                    font: {
+                        size: 20
+                    }
+                }
+            },
+            onClick: function(event, elements) {
+                if (elements.length > 0) {
+                    var element = elements[0];
+                    var state = chart.data.labels[element.index];
+                    console.log(state);
+                    var threadsInState = threads.filter(function(thread) {
+
+                        return thread.threadState && thread.threadState.startsWith(state);
+                    });
+                    console.log(threadsInState);
+                    openThreadsInStateWindow(state, threadsInState);
+                }
+            }
+        }
+    });
+}
+
+// Function to open a new window with the threads in the clicked state
+function openThreadsInStateWindow(state, threadsInState) {
+    var newWindow = window.open("", "_blank");
+    newWindow.document.write("<h2>Threads in state: " + state + "</h2>");
+    newWindow.document.write("<ul>");
+    threadsInState.forEach(function(thread) {
+        newWindow.document.write("<li>" + thread.name + "</li>");
+    });
+    newWindow.document.write("</ul>");
+}
+
+
+function getThreadStateCounts(threads) {
+    var threadStateCounts = {
+        'RUNNABLE': 0,
+        'BLOCKED': 0,
+        'NEW': 0,
+        'TERMINATED': 0,
+        'TIMED_WAITING': 0,
+        'WAITING': 0
+    };
+
+    threads.forEach(function(thread) {
+        if (thread.threadState) {
+            var state = thread.threadState.split(' ')[0];
+            if (state in threadStateCounts) {
+                threadStateCounts[state]++;
+            }
+        }
+
+    });
+
+    return threadStateCounts;
+}
+
+function createBarChart(stackTraceData) {
+    console.log("In bar chart:", stackTraceData.stackTraceCounts);
+    var ctx = document.getElementById('stackTraceChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: Object.keys(stackTraceData.stackTraceCounts),
+            datasets: [{
+                data: Object.values(stackTraceData.stackTraceCounts),
+                backgroundColor: '#003f5c',
+                borderColor: '#58508d',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            aspectRatio: 3,
+            plugins: {
+                legend: {
+                    display: false
+                },
+                title: {
+                    display: true,
+                    text: 'Threads with Identical Stack Trace (Top 10)',
+                    font: {
+                        size: 20
+                    }
+                }
+            },
+            onClick: function(evt, item) {
+                if (item.length > 0) {
+                    var index = item[0].index;
+                    var label = this.data.labels[index];
+                    console.log("Label of the clicked bar:", label);
+                    var actualStackTrace = stackTraceData.actualStackTraces[label];
+                    console.log(actualStackTrace);
+                    // Ensure actualStackTrace is an array and join its elements into a string
+
+                    var stackTraceString = Array.isArray(actualStackTrace) ? actualStackTrace.join('\n') : String(actualStackTrace);
+                    
+                    console.log(stackTraceString);
+                     // Open a new window
+                    var newWindow = window.open("");
+                    if (newWindow) {
+                        // Write the stack trace into the new window
+                        newWindow.document.write("<pre>" + stackTraceString + "</pre>");
+                        newWindow.document.close();
+                    } else {
+                        alert("Pop-up blocked. Please allow pop-ups for this website.");
+                    }
+                }
+            }
+        },
+    });
+}
+
+
+function getStackTraceCounts(allFilteredThreadsandStacks) {
+    var stackTraceCounts = {};
+    var actualStackTraces = {};
+    var index = 1;
+
+    allFilteredThreadsandStacks.forEach(function(stackTraces) {
+       // Check if the stack trace is non-empty
+       if (stackTraces.stackTrace && stackTraces.stackTrace.length > 0) {
+        var stackTrace = "Stack Trace " + index;
+        if (!(stackTrace in stackTraceCounts)) {
+            stackTraceCounts[stackTrace] = stackTraces.threads;
+            actualStackTraces[stackTrace] = stackTraces.stackTrace;
+            index++;
+        }
+    }
+    });
+
+    console.log(index);
+
+    // Sort the stack traces by count and keep only the top 10
+    var sortedStackTraces = Object.entries(stackTraceCounts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    stackTraceCounts = Object.fromEntries(sortedStackTraces);
+
+    return {stackTraceCounts, actualStackTraces};
+}
+
+function createDaemonChart(threads) {
+    var daemonThreads = threads.filter(thread => thread.daemon);
+    var nonDaemonThreads = threads.filter(thread => !thread.daemon);
+
+    // Prepare data for the chart
+    var data = {
+        datasets: [{
+            data: [daemonThreads.length, nonDaemonThreads.length],
+            backgroundColor: ["#ff7f0e", "#2ca02c"],
+        }],
+        labels: ['Daemon Threads', 'Non-Daemon Threads']
+    };
+
+    // Create the chart
+    var ctx = document.getElementById('daemonDonughtChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: data,
+        options: {
+            responsive: true,
+            aspectRatio: 2.75,
+            plugins: {
+                legend: {
+                    position: 'top',
+                },
+                title: {
+                    display: true,
+                    text: 'Daemon vs Non-Daemon Threads',
+                    font: {
+                        size: 20
+                    }
+                },
+            },
+            animation: {
+                animateScale: true,
+                animateRotate: true
+            },
+            onClick: function(event, elements) {
+                if (elements.length > 0) {
+                    var index = elements[0].index;
+                    console.log(index);
+                    var threads = index === 0 ? daemonThreads : nonDaemonThreads;
+                    var threadNames = threads.map(thread => thread.name);
+                    // Open a new window with the list of threads
+                    var newWindow = window.open("", "_blank");
+                    if (newWindow) {
+                        newWindow.document.write(threadNames.join('<br>'));
+                        newWindow.document.close();
+                    } else {
+                        alert("Pop-up blocked. Please allow pop-ups for this website.");
+                    }
+                }
+            }
+        }
+    });
 }
