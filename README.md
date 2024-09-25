@@ -4,11 +4,11 @@
 
 This is a Java thread dump analyzer written in Javascript built on top of https://github.com/spotify/threaddump-analyzer
 
-<!-- # License
+# License
 
 The Java Thread Dump Analyzer is licensed under
 [version 2.0 of the Apache license](http://www.apache.org/licenses/LICENSE-2.0.html),
-the copyright belongs to Spotify AB. -->
+the copyright belongs to Spotify AB.
 
 # Testing Locally
 
